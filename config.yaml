@@ -1,0 +1,15 @@
+# Configuration globale ANALYTIC
+paths:
+  raw_logs: "data/logs_hospitaliers.csv"
+  features: "data/logs_features.csv"
+  scores: "data/logs_scores.csv"
+  alerts: "data/alertes.json"
+
+model:
+  contamination: 0.10
+  n_estimators: 200
+  random_state: 42
+
+llm:
+  api_url: "http://localhost:11434/api/generate"  # API Ollama locale par défaut
+  model_name: "llama3"                             # Modèle léger
