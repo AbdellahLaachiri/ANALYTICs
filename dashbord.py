@@ -7,7 +7,6 @@ def generer_visualisation_soc():
     json_input = "data/alertes.json"
     img_output = "data/dashboard_analytic.png"
     
-    # Sécurité : Vérifier que le fichier d'alertes existe
     if not os.path.exists(json_input):
         print(f"❌ Erreur : Le fichier {json_input} est introuvable. Exécutez d'abord signalisations.py")
         return
@@ -17,11 +16,9 @@ def generer_visualisation_soc():
         
     df = pd.DataFrame(donnees_alertes)
     
-    # Configuration graphique : Style moderne "Dark Mode"
+    # Configuration graphique : Style moderne "Dark Mode" Cyber SOC
     plt.style.use('dark_background')
     fig = plt.figure(figsize=(15, 9))
-    
-    # Ligne corrigée ici : Remplacement de pad=20 par y=0.98 pour éviter l'AttributeError
     fig.suptitle("ANALYTIC ── Interface de Supervision Cyber SOC Hospitalier", fontsize=18, color='#deff9a', weight='bold', y=0.98)
     
     if df.empty:
@@ -44,7 +41,7 @@ def generer_visualisation_soc():
     top_suspects = df.groupby('user_id')['score_anomalie'].max().nlargest(5).sort_values(ascending=True)
     
     barres = ax2.barh(top_suspects.index, top_suspects.values, color='#06d6a0', edgecolor='white', height=0.5)
-    ax2.set_title("Top 5 des Profils Utilisateurs les plus Suspects", color='#deff9a', fontsize=12, pad=10)
+    ax2.set_title("Top 5 des Profils Utilisateurs les plus Suspects (Score Max)", color='#deff9a', fontsize=12, pad=10)
     ax2.set_xlim(0, 1.0)
     
     for barre in barres:
@@ -59,12 +56,14 @@ def generer_visualisation_soc():
     ax3.set_xlabel("Intervalle de Score")
     ax3.set_ylabel("Nombre d'Événements")
 
-    # 4. Table : Registre des 5 Dernières Alertes Critiques / Élevées
+    # 4. Table : Registre des 5 Pires Alertes d'Anomalies (Triées par score décroissant)
     ax4 = plt.subplot(2, 2, 4)
     ax4.axis('off')
-    ax4.set_title("Registre des Dernières Alertes Fléchées (SOC)", color='#ff4b4b', fontsize=12, pad=10, weight='bold')
+    ax4.set_title("Top 5 des Alertes Prioritaires à Traiter (Filtrées)", color='#ff4b4b', fontsize=12, pad=10, weight='bold')
     
-    alertes_prioritaires = df[df['severite'].isin(['CRITIQUE', 'ÉLEVÉ'])].head(5)
+    # AMÉLIORATION CYBER : Tri par score_anomalie décroissant pour éviter les doublons d'utilisateurs identiques au début
+    df_trie = df.sort_values(by="score_anomalie", ascending=False)
+    alertes_prioritaires = df_trie[df_trie['severite'].isin(['CRITIQUE', 'ÉLEVÉ'])].head(5)
     
     position_y = 0.8
     ax4.text(0.02, 0.9, f"ID ALERTE   USER ID   SÉVÉRITÉ    SCORE     STATUT", color='#deff9a', fontsize=10, fontfamily='monospace', weight='bold')
@@ -77,9 +76,8 @@ def generer_visualisation_soc():
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     
-    # Export automatique du livrable image pour le rapport
     plt.savefig(img_output, dpi=150)
-    print(f"☑ Succès : Dashboard mis à jour visuellement et exporté dans {img_output}")
+    print(f"☑ Succès : Dashboard mis à jour (Tri Cyber appliqué) -> {img_output}")
     plt.show()
 
 if __name__ == "__main__":
