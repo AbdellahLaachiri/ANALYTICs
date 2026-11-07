@@ -1,0 +1,814 @@
+diff --git a/app.py b/app.py
+index ba10d2d..5ac337e 100644
+--- a/app.py
++++ b/app.py
+@@ -51,32 +51,34 @@ else:
+         data = json.load(f)
+     df = pd.DataFrame(data)
+ 
+-    # Enrichissement réseau virtuel
+-    if 'ip_source' not in df.columns:
+-        import random
+-        random.seed(42)
+-        df['ip_source'] = [f"10.140.23.{random.randint(10, 254)}" for _ in range(len(df))]
+-        df['heure'] = [random.randint(0, 23) for _ in range(len(df))]
+-        df['service_cible'] = [random.choice(["Urgences", "Radiologie", "Cardiologie", "Ressources Humaines", "DPI_Admin"]) for _ in range(len(df))]
++    # Les colonnes role / ip_source / heure_pic viennent désormais du pipeline réel
++    # (preprocessing.py -> signalisations.py), plus aucune donnée simulée ici.
++    colonnes_requises = {"role", "ip_source", "heure_pic"}
++    if df.empty:
++        st.info("Aucune alerte dans le fichier JSON.")
++        st.stop()
++    if not colonnes_requises.issubset(df.columns):
++        st.error("❌ Fichier d'alertes ancien format. Relancez : preprocessing.py → detection.py → signalisations.py")
++        st.stop()
+ 
+     # --- BARRE LATÉRALE DE CONTRÔLE INTERACTIVE ---
+     st.sidebar.markdown("### 🎛️ Paramètres d'Audit")
+-    
++
+     severites_dispos = ["CRITIQUE", "ÉLEVÉ", "MOYEN", "FAIBLE"]
+     severites_choisies = st.sidebar.multiselect("Filtrer par Sévérité Algorithmique", severites_dispos, default=severites_dispos)
+-    
+-    services_dispos = ["Tous"] + sorted(df['service_cible'].unique().tolist())
+-    service_choisi = st.sidebar.selectbox("Filtrer par Service Hospitalier", services_dispos)
++
++    roles_dispos = ["Tous"] + sorted(df['role'].unique().tolist())
++    role_choisi = st.sidebar.selectbox("Filtrer par Rôle de l'utilisateur", roles_dispos)
+ 
+     # Filtrage du DataFrame
+     df_filtre = df[df['severite'].isin(severites_choisies)]
+-    if service_choisi != "Tous":
+-        df_filtre = df_filtre[df_filtre['service_cible'] == service_choisi]
++    if role_choisi != "Tous":
++        df_filtre = df_filtre[df_filtre['role'] == role_choisi]
+ 
+     # --- BANDEAU DÉTECTION ---
+     contient_critique = "CRITIQUE" in df_filtre['severite'].values if not df_filtre.empty else False
+     if contient_critique:
+-        st.markdown('<div class="crisis-active">⚠️ ALERTE NIVEAU ROUGE : COMPROMISSION ET EXFILTRATION DETECTEES EN ZONE CRITIQUE</div>', unsafe_allow_html=True)
++        st.markdown('<div class="crisis-active">⚠️ ALERTE NIVEAU ROUGE : ANOMALIES DE SÉVÉRITÉ CRITIQUE DÉTECTÉES</div>', unsafe_allow_html=True)
+     else:
+         st.markdown('<div class="crisis-active" style="background: linear-gradient(90deg, #4ea8de 0%, #48cae4 100%);">✓ FLUX COMPORTEMENTAL STABLE : SURVEILLANCE COMPORTEMENTALE STANDARDISEE</div>', unsafe_allow_html=True)
+     st.markdown("<br>", unsafe_allow_html=True)
+@@ -88,7 +90,7 @@ else:
+     
+     m1.metric("Incidents Identifiés", total_alertes, delta=f"+{critiques_count} Critiques" if critiques_count > 0 else None, delta_color="inverse")
+     m2.metric("Indice de Menace Max", f"{df_filtre['score_anomalie'].max():.4f}" if total_alertes > 0 else "0.0000")
+-    m3.metric("Service le Plus Ciblé", df_filtre['service_cible'].mode()[0] if total_alertes > 0 else "Aucun")
++    m3.metric("Rôle le Plus Concerné", df_filtre['role'].mode()[0] if total_alertes > 0 else "Aucun")
+     m4.metric("Niveau d'Ingénierie", "TRL 5 (Plein Écran)")
+ 
+     st.markdown("---")
+@@ -100,7 +102,7 @@ else:
+         st.markdown("#### 📈 Chronologie d'Attaque & Éléments Temporels")
+         if total_alertes > 0:
+             df_timeline = df_filtre.sort_values(by="date_activite")
+-            st.area_chart(df_timeline, x="date_activite", y="score_anomalie", color="#e63946", use_container_width=True)
++            st.area_chart(df_timeline, x="date_activite", y="score_anomalie", color="#e63946", width="stretch")
+         else:
+             st.info("Aucun incident à afficher.")
+ 
+@@ -108,12 +110,12 @@ else:
+         st.markdown("#### 🌡️ Heatmap Horaire des Activités Suspectes")
+         if total_alertes > 0:
+             chart = alt.Chart(df_filtre).mark_rect().encode(
+-                x=alt.X('heure:O', title='Heure de Connexion (24h)'),
+-                y=alt.Y('service_cible:N', title='Service Hospitalier'),
++                x=alt.X('heure_pic:O', title='Heure du pic d\'activité (24h)'),
++                y=alt.Y('role:N', title='Rôle de l\'utilisateur'),
+                 color=alt.Color('count():Q', title='Intensité', scale=alt.Scale(scheme='reds')),
+-                tooltip=['heure', 'service_cible', 'count()']
++                tooltip=['heure_pic', 'role', 'count()']
+             ).properties(height=280)
+-            st.altair_chart(chart, use_container_width=True)
++            st.altair_chart(chart, width="stretch")
+         else:
+             st.info("Aucune donnée disponible.")
+ 
+@@ -129,7 +131,7 @@ else:
+         with col_liste:
+             # CORRECTION DU PARAMÈTRE ICI : width='stretch'
+             st.dataframe(
+-                df_visuel[["id_alerte", "user_id", "service_cible", "ip_source", "score_anomalie", "severite"]],
++                df_visuel[["id_alerte", "user_id", "role", "ip_source", "score_anomalie", "severite"]],
+                 width="stretch",
+                 hide_index=True
+             )
+@@ -141,9 +143,11 @@ else:
+             incident_cible = st.selectbox("Cibler un Incident pour Confinement :", alertes_ids)
+             ligne_cible = df_visuel[df_visuel['id_alerte'] == incident_cible].iloc[0]
+             
+-            if st.button(f"🔴 ISOLER L'UTILISATEUR {ligne_cible['user_id']}", use_container_width=True):
+-                st.toast("Ordre de remédiation transmis !", icon="🛡️")
+-                st.success(f"**Action Réussie :** Le compte `{ligne_cible['user_id']}` a été désactivé. L'IP `{ligne_cible['ip_source']}` est bloquée.")
++            if st.button(f"🔴 ISOLER L'UTILISATEUR {ligne_cible['user_id']}", width="stretch"):
++                st.toast("Ordre de confinement enregistré (simulation)", icon="🛡️")
++                st.warning(f"**Simulation SOAR :** ordre de désactivation du compte `{ligne_cible['user_id']}` "
++                           f"et de blocage de l'IP `{ligne_cible['ip_source']}` enregistré. "
++                           f"Aucune action réelle n'est exécutée : le prototype n'est pas connecté à un annuaire ni à un pare-feu.")
+     else:
+         st.info("Aucune anomalie à traiter.")
+ 
+@@ -160,14 +164,19 @@ else:
+             
+         with sec2:
+             st.markdown(f"🔬 **Métriques SIEM brutes :** `{ligne_audit['explication_technique']}`")
+-            st.info(f"**💬 Rapport Vulgarisé de l'Agent LLM :**\n\n{ligne_audit['explication_llm']}")
+-            
++            if ligne_audit['explication_llm']:
++                st.info(f"**💬 Rapport Vulgarisé de l'Agent LLM :**\n\n{ligne_audit['explication_llm']}")
++            else:
++                st.caption("Cette alerte n'est pas dans les plus graves enrichies par l'agent LLM "
++                           "(voir `alerts.top_n_llm` dans config.yaml).")
++
+         st.markdown("💬 **Discuter avec l'Agent LLM à propos de cette menace**")
+         user_msg = st.text_input("Saisir votre requête d'investigation :")
+         if user_msg:
+             with st.spinner("Génération de l'analyse cyber..."):
+-                st.chat_message("assistant").write(
+-                    f"Concernant l'alerte `{ligne_audit['id_alerte']}` de `{ligne_audit['user_id']}` dans le service `{ligne_audit['service_cible']}` : "
+-                    f"les indicateurs de type '{ligne_audit['explication_technique']}' confirment une déviation comportementale notable. "
+-                    f"En réponse à votre question : '{user_msg}', l'étape recommandée est l'audit forensic des terminaux liés à l'IP `{ligne_audit['ip_source']}`."
+-                )
+\ No newline at end of file
++                from llm_analyst import repondre_question
++                reponse, source = repondre_question(ligne_audit.to_dict(), user_msg)
++            if source == "llm":
++                st.chat_message("assistant").write(reponse)
++            else:
++                st.warning(reponse)
+\ No newline at end of file
+diff --git a/config.yaml b/config.yaml
+index d07ea7a..6a23453 100644
+--- a/config.yaml
++++ b/config.yaml
+@@ -4,12 +4,31 @@ paths:
+   features: "data/logs_features.csv"
+   scores: "data/logs_scores.csv"
+   alerts: "data/alertes.json"
++  evaluation: "data/evaluation.json"
++
++network:
++  internal_prefix: "192.168."   # tout ce qui ne commence pas par ce préfixe = IP externe
+ 
+ model:
+-  contamination: 0.10
++  contamination: 0.10           # part de journées signalées (seuil d'alerte, à régler avec l'équipe SOC)
+   n_estimators: 200
+   random_state: 42
++  features:
++    - nb_actions
++    - nb_echecs
++    - ratio_echecs
++    - volume_total
++    - volume_max
++    - nb_acces_nuit
++    - nb_weekend
++    - amplitude_horaire
++    - nb_ip_externes
++    - nb_ip_distinctes
++
++alerts:
++  top_n_llm: 30                 # nombre d'alertes enrichies par l'agent LLM (les plus graves)
+ 
+ llm:
+   api_url: "http://localhost:11434/api/generate"  # API Ollama locale par défaut
+-  model_name: "llama3"                             # Modèle léger
+\ No newline at end of file
++  model_name: "llama3"                             # Modèle léger
++  timeout: 4
+diff --git a/detection.py b/detection.py
+index b5d310e..456fad4 100644
+--- a/detection.py
++++ b/detection.py
+@@ -1,75 +1,77 @@
+ """
+-ANALYTIC - Détection d'anomalies par Isolation Forest
++ANALYTIC - Détection d'anomalies par Isolation Forest (v2)
+ Auteur : Abdellah L.
++
++v2 : paramètres lus dans config.yaml, features enrichies (IP externes, ratio d'échecs,
++volume max, ...), sévérité calculée sur la distribution des scores des anomalies détectées.
+ """
+ 
+ import pandas as pd
+-import numpy as np
++import yaml
+ from sklearn.ensemble import IsolationForest
+ 
+-FICHIER_ENTREE = "data/logs_features.csv"
+-FICHIER_SORTIE = "data/logs_scores.csv"
+-
+-# Chargement des données
+-df = pd.read_csv(FICHIER_ENTREE)
+-print(f"✅ {len(df)} entrées chargées")
+-
+-# Features utilisées pour la détection
+-FEATURES = [
+-    "nb_actions",
+-    "nb_echecs",
+-    "volume_total",
+-    "nb_acces_nuit",
+-    "nb_weekend",
+-    "amplitude_horaire",
+-]
+-
+-X = df[FEATURES].fillna(0)
+-
+-# Entraînement du modèle
+-model = IsolationForest(
+-    n_estimators=200,
+-    contamination=0.10,
+-    random_state=42,
+-    n_jobs=-1
+-)
+-model.fit(X)
+-print("✅ Modèle entraîné")
+-
+-# Prédiction
+-df["prediction_raw"] = model.predict(X)
+-df["score_anomalie"] = -model.score_samples(X)
+-df["est_detecte"]    = (df["prediction_raw"] == -1).astype(int)
+-
+-# Niveau de sévérité
+-def attribuer_severite(score):
+-    if score > 0.7:
+-        return "CRITIQUE"
+-    elif score > 0.55:
+-        return "ÉLEVÉ"
+-    elif score > 0.45:
+-        return "MOYEN"
+-    else:
+-        return "FAIBLE"
+-
+-df["severite"] = df["score_anomalie"].apply(attribuer_severite)
+-
+-# Résultats
+-total     = len(df)
+-detectes  = int(df["est_detecte"].sum())
+-normaux   = total - detectes
+-
+-print(f"\n📊 Résultats de la détection :")
+-print(f"   Total analysé       : {total}")
+-print(f"   Comportements normaux : {normaux}")
+-print(f"   Anomalies détectées   : {detectes}")
+-print(f"   Taux d'anomalies      : {detectes/total*100:.1f}%")
+-
+-print(f"\n📊 Répartition par sévérité :")
+-for niveau in ["CRITIQUE", "ÉLEVÉ", "MOYEN", "FAIBLE"]:
+-    count = (df["severite"] == niveau).sum()
+-    print(f"   {niveau:10s} : {count}")
+-
+-# Export
+-df.to_csv(FICHIER_SORTIE, index=False)
+-print(f"\n✅ Résultats exportés → {FICHIER_SORTIE}")
+\ No newline at end of file
++
++def charger_config(chemin="config.yaml"):
++    with open(chemin, "r", encoding="utf-8") as f:
++        return yaml.safe_load(f)
++
++
++def calculer_scores(df, features, contamination, n_estimators=200, random_state=42):
++    """Entraîne un Isolation Forest et renvoie df + score_anomalie / prediction / est_detecte."""
++    X = df[features].fillna(0)
++    model = IsolationForest(
++        n_estimators=n_estimators,
++        contamination=contamination,
++        random_state=random_state,
++        n_jobs=-1,
++    )
++    model.fit(X)
++    out = df.copy()
++    out["prediction_raw"] = model.predict(X)
++    out["score_anomalie"] = -model.score_samples(X)
++    out["est_detecte"] = (out["prediction_raw"] == -1).astype(int)
++    return out
++
++
++def attribuer_severite(df):
++    """Sévérité relative aux anomalies détectées : top 10 % = CRITIQUE, 10-40 % = ÉLEVÉ, reste = MOYEN.
++    Les journées non détectées sont FAIBLE."""
++    sev = pd.Series("FAIBLE", index=df.index)
++    det = df["est_detecte"] == 1
++    if det.any():
++        q60 = df.loc[det, "score_anomalie"].quantile(0.60)
++        q90 = df.loc[det, "score_anomalie"].quantile(0.90)
++        sev[det] = "MOYEN"
++        sev[det & (df["score_anomalie"] >= q60)] = "ÉLEVÉ"
++        sev[det & (df["score_anomalie"] >= q90)] = "CRITIQUE"
++    return sev
++
++
++def main():
++    config = charger_config()
++    df = pd.read_csv(config["paths"]["features"])
++    print(f"✅ {len(df)} entrées chargées")
++
++    m = config["model"]
++    df = calculer_scores(df, m["features"], m["contamination"], m["n_estimators"], m["random_state"])
++    df["severite"] = attribuer_severite(df)
++    print("✅ Modèle entraîné")
++
++    total = len(df)
++    detectes = int(df["est_detecte"].sum())
++    print("\n📊 Résultats de la détection :")
++    print(f"   Total analysé         : {total}")
++    print(f"   Comportements normaux : {total - detectes}")
++    print(f"   Anomalies détectées   : {detectes}")
++    print(f"   Taux d'anomalies      : {detectes / total * 100:.1f}%")
++
++    print("\n📊 Répartition par sévérité :")
++    for niveau in ["CRITIQUE", "ÉLEVÉ", "MOYEN", "FAIBLE"]:
++        print(f"   {niveau:10s} : {(df['severite'] == niveau).sum()}")
++
++    df.to_csv(config["paths"]["scores"], index=False)
++    print(f"\n✅ Résultats exportés → {config['paths']['scores']}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/evaluation.py b/evaluation.py
+new file mode 100644
+index 0000000..6df82bb
+--- /dev/null
++++ b/evaluation.py
+@@ -0,0 +1,125 @@
++"""
++ANALYTIC - Évaluation de la détection contre la vérité terrain (colonne est_anomalie du générateur).
++
++Compare trois approches au niveau user-jour :
++  - Isolation Forest v1 (les 6 features d'origine)
++  - Isolation Forest v2 (features de config.yaml)
++  - Baseline à règles (seuils fixes, façon SIEM classique)
++
++Métriques : précision, rappel, F1 au seuil d'alerte, plus des métriques indépendantes du seuil
++(ROC-AUC, précision@k). Le rappel par scénario est calculé au niveau des logs anormaux.
++
++Lancer après preprocessing.py :  python evaluation.py
++"""
++
++import json
++
++import pandas as pd
++from sklearn.metrics import average_precision_score, roc_auc_score
++
++from detection import calculer_scores, charger_config
++
++FEATURES_V1 = ["nb_actions", "nb_echecs", "volume_total", "nb_acces_nuit",
++               "nb_weekend", "amplitude_horaire"]
++
++
++def prf(vrai, pred):
++    tp = int(((vrai == 1) & (pred == 1)).sum())
++    fp = int(((vrai == 0) & (pred == 1)).sum())
++    fn = int(((vrai == 1) & (pred == 0)).sum())
++    p = tp / (tp + fp) if tp + fp else 0.0
++    r = tp / (tp + fn) if tp + fn else 0.0
++    f1 = 2 * p * r / (p + r) if p + r else 0.0
++    return {"tp": tp, "fp": fp, "fn": fn, "precision": round(p, 3),
++            "rappel": round(r, 3), "f1": round(f1, 3)}
++
++
++def precision_at_k(vrai, score, k):
++    top = vrai.loc[score.sort_values(ascending=False).index[:k]]
++    return round(float(top.mean()), 3)
++
++
++def scenario(row):
++    """Le CSV ne contient que est_anomalie : on retrouve le scénario d'après ses signatures."""
++    if not str(row["ip_source"]).startswith("192.168."):
++        return "ip_inconnue"
++    if row["volume"] >= 200:
++        return "massif"
++    if row["action"] == "ACCES_SYSTEME" and row["statut"] == "FAILURE" and row["volume"] >= 10:
++        return "brute_force"
++    return "nuit"
++
++
++def main():
++    cfg = charger_config()
++    feats = pd.read_csv(cfg["paths"]["features"])
++    feats["date"] = feats["date"].astype(str)
++
++    logs = pd.read_csv(cfg["paths"]["raw_logs"]).drop_duplicates()
++    logs["timestamp"] = pd.to_datetime(logs["timestamp"])
++    logs["date"] = logs["timestamp"].dt.date.astype(str)
++
++    vrai = logs.groupby(["user_id", "date"])["est_anomalie"].max().rename("vrai").reset_index()
++    df = feats.merge(vrai, on=["user_id", "date"], how="left")
++    df["vrai"] = df["vrai"].fillna(0).astype(int)
++
++    m = cfg["model"]
++    cont = m["contamination"]
++    n_pos = int(df["vrai"].sum())
++    print(f"User-jours : {len(df)} dont {n_pos} avec une vraie attaque ({n_pos / len(df):.1%})")
++    print(f"Seuil d'alerte (contamination) : {cont:.0%} des journées\n")
++
++    resultats = {"n_user_jours": len(df), "n_vrais_anormaux": n_pos, "contamination": cont}
++    k = int(round(cont * len(df)))
++
++    # --- Isolation Forest v1 et v2 ---
++    run = {}
++    for nom, f in [("IF_v1_6_features", FEATURES_V1), ("IF_v2", m["features"])]:
++        r = calculer_scores(df, f, cont, m["n_estimators"], m["random_state"])
++        run[nom] = r
++        res = prf(r["vrai"], r["est_detecte"])
++        res["roc_auc"] = round(roc_auc_score(r["vrai"], r["score_anomalie"]), 3)
++        res["avg_precision"] = round(average_precision_score(r["vrai"], r["score_anomalie"]), 3)
++        res[f"precision@{k}"] = precision_at_k(r["vrai"], r["score_anomalie"], k)
++        resultats[nom] = res
++
++    # --- Baseline à règles ---
++    regle = ((df["nb_echecs"] >= 3) | (df["volume_max"] >= 10) |
++             (df["nb_ip_externes"] > 0) | (df["nb_acces_nuit"] > 0)).astype(int)
++    resultats["regles_seuils_fixes"] = prf(df["vrai"], regle)
++
++    # --- Sensibilité au seuil d'alerte (IF v2) ---
++    sweep = {}
++    for c in [0.05, 0.10, 0.20, 0.30, round(n_pos / len(df), 2)]:
++        r = calculer_scores(df, m["features"], c, m["n_estimators"], m["random_state"])
++        sweep[str(c)] = prf(r["vrai"], r["est_detecte"])
++    resultats["IF_v2_selon_contamination"] = sweep
++
++    # --- Rappel par scénario (niveau log) ---
++    a = logs[logs["est_anomalie"] == 1].copy()
++    a["scenario"] = a.apply(scenario, axis=1)
++    a = a.merge(run["IF_v1_6_features"][["user_id", "date", "est_detecte"]].rename(
++        columns={"est_detecte": "v1"}), on=["user_id", "date"], how="left")
++    a = a.merge(run["IF_v2"][["user_id", "date", "est_detecte"]].rename(
++        columns={"est_detecte": "v2"}), on=["user_id", "date"], how="left")
++    a = a.merge(df[["user_id", "date"]].assign(regles=regle.values), on=["user_id", "date"], how="left")
++    par_scen = a.groupby("scenario")[["v1", "v2", "regles"]].mean().round(3)
++    par_scen.insert(0, "nb_logs", a.groupby("scenario").size())
++    resultats["rappel_par_scenario"] = par_scen.to_dict(orient="index")
++
++    # --- Affichage ---
++    print("=== Au seuil d'alerte ===")
++    tab = pd.DataFrame({n: resultats[n] for n in ["IF_v1_6_features", "IF_v2", "regles_seuils_fixes"]}).T
++    print(tab.to_string())
++    print("\n=== IF v2 selon le seuil d'alerte (contamination) ===")
++    print(pd.DataFrame(sweep).T[["precision", "rappel", "f1"]].to_string())
++    print("\n=== Rappel par scénario (part des logs anormaux couverts par une alerte) ===")
++    print(par_scen.to_string())
++
++    with open(cfg["paths"]["evaluation"], "w", encoding="utf-8") as f:
++        json.dump(resultats, f, indent=2, ensure_ascii=False)
++    print(f"\n✅ Résultats exportés → {cfg['paths']['evaluation']}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/llm_analyst.py b/llm_analyst.py
+index 8f3c666..01b000f 100644
+--- a/llm_analyst.py
++++ b/llm_analyst.py
+@@ -1,41 +1,71 @@
+ import requests
+-import json
+ import yaml
+ 
+ # Chargement de la configuration
+-with open("config.yaml", "r") as f:
++with open("config.yaml", "r", encoding="utf-8") as f:
+     config = yaml.safe_load(f)
+ 
++LLM = config["llm"]
++
++
++def _appeler_llm(prompt):
++    """Appelle l'API Ollama locale. Renvoie le texte, ou None si l'agent est indisponible."""
++    payload = {"model": LLM["model_name"], "prompt": prompt, "stream": False}
++    try:
++        response = requests.post(LLM["api_url"], json=payload, timeout=LLM.get("timeout", 4))
++        if response.status_code == 200:
++            texte = response.json().get("response", "").strip()
++            return texte or None
++    except Exception:
++        pass
++    return None
++
++
+ def generer_explication_llm(user_id, severite, explication_technique, score):
+-    """Demande à l'Agent LLM d'expliquer l'anomalie de manière humaine."""
++    """Demande à l'Agent LLM d'expliquer l'anomalie de manière humaine.
++    Si Ollama n'est pas lancé (ou répond mal), renvoie une explication de secours,
++    clairement signalée comme générée automatiquement sans LLM."""
+     prompt = f"""
+     En tant qu'expert en cybersécurité hospitalière, explique de manière simple et non-technique cette anomalie détectée :
+     - Utilisateur suspect : {user_id}
+     - Gravité de l'incident : {severite}
+     - Score de risque IA : {score}
+     - Faits observés : {explication_technique}
+-    
++
+     Donne un résumé de 2 phrases sur le danger potentiel et ajoute 2 recommandations immédiates pour l'équipe de sécurité.
+     """
+-    
+-    payload = {
+-        "model": config["llm"]["model_name"],
+-        "prompt": prompt,
+-        "stream": False
+-    }
+-    
+-    try:
+-        response = requests.post(config["llm"]["api_url"], json=payload, timeout=4)
+-        if response.status_code == 200:
+-            return response.json().get("response", "").strip()
+-    except Exception:
+-        # Mode de secours automatique (Fallback) si Ollama n'est pas lancé en local
+-        return (f"🚨 [ANALYSE AUTO AGENT LLM] Le profil {user_id} présente une déviation comportementale "
+-                f"critique basée sur les indicateurs suivants : {explication_technique}. "
+-                f"Recommandations : 1. Isoler temporairement la session utilisateur. "
+-                f"2. Déclencher un audit sur les adresses IP sources associées.")
++    texte = _appeler_llm(prompt)
++    if texte:
++        return texte
++
++    # Mode de secours (fallback) : texte gabarit, sans LLM
++    return (f"[Explication automatique - LLM indisponible] Le profil {user_id} présente une anomalie "
++            f"de gravité {severite} : {explication_technique}. "
++            f"Recommandations : 1. Vérifier avec l'utilisateur la légitimité de ces activités. "
++            f"2. Examiner les journaux d'authentification et les adresses IP associées avant toute mesure de blocage.")
++
++
++def repondre_question(alerte, question):
++    """Répond à une question d'investigation sur une alerte (chatbot du dashboard).
++    Renvoie (texte, source) avec source = 'llm' ou 'indisponible'."""
++    prompt = f"""
++    Tu es un analyste SOC dans un hôpital. Contexte de l'alerte :
++    - Utilisateur : {alerte.get('user_id')} (rôle : {alerte.get('role')})
++    - Date : {alerte.get('date_activite')} - heure du pic : {alerte.get('heure_pic')}h - IP : {alerte.get('ip_source')}
++    - Gravité : {alerte.get('severite')} - score : {alerte.get('score_anomalie')}
++    - Faits observés : {alerte.get('explication_technique')}
++
++    Question de l'analyste : {question}
++    Réponds en français, de façon concise, sans inventer de faits absents du contexte.
++    """
++    texte = _appeler_llm(prompt)
++    if texte:
++        return texte, "llm"
++    return ("L'agent LLM local (Ollama) n'est pas joignable : impossible de répondre à cette question pour le moment. "
++            "Lancez Ollama (`ollama run llama3`) puis réessayez."), "indisponible"
++
+ 
+ if __name__ == "__main__":
+     # Test unitaire rapide du module
+     test_res = generer_explication_llm("USR_ADM_06", "CRITIQUE", "18 échecs de connexion, accès nocturnes", 0.7072)
+-    print("Test unitaire llm_analyst.py :\n", test_res)
+\ No newline at end of file
++    print("Test unitaire llm_analyst.py :\n", test_res)
+diff --git a/preprocessing.py b/preprocessing.py
+index b1524a9..13131a0 100644
+--- a/preprocessing.py
++++ b/preprocessing.py
+@@ -1,63 +1,74 @@
++"""
++ANALYTIC - Prétraitement des logs (v2)
++
++Transforme les logs bruts en features par utilisateur et par jour.
++Nouveautés v2 : IP externes, ratio d'échecs, volume maximal sur un log,
++heure du pic d'activité, rôle et IP principale (utilisés ensuite par les alertes
++et le dashboard, à la place de données aléatoires).
++"""
++
+ import pandas as pd
++import yaml
+ 
+-# 1. Charger les logs
+-df = pd.read_csv("data/logs_hospitaliers.csv")
++with open("config.yaml", "r", encoding="utf-8") as f:
++    config = yaml.safe_load(f)
+ 
++PREFIXE_INTERNE = config["network"]["internal_prefix"]
++CLES = ["user_id", "date"]
++
++# 1. Charger les logs
++df = pd.read_csv(config["paths"]["raw_logs"])
+ print(f"✅ Logs chargés : {len(df)}")
+ 
+ # 2. Nettoyer les données
+ df = df.drop_duplicates()
+ df = df.fillna(0)
+-
+ print(f"✅ Après nettoyage : {len(df)} logs")
+ 
+-# 3. Convertir la colonne timestamp en date
++# 3. Colonnes temporelles
+ df["timestamp"] = pd.to_datetime(df["timestamp"])
+-
+-# 4. Créer les colonnes temporelles
+ df["heure"] = df["timestamp"].dt.hour
+ df["jour_semaine"] = df["timestamp"].dt.dayofweek
+-df["date"] = df["timestamp"].dt.date
+-
+-# Connexion de nuit : entre 22h et 5h
+-df["est_nuit"] = (
+-    (df["heure"] >= 22) |
+-    (df["heure"] <= 5)
+-).astype(int)
+-
+-# Week-end
+-df["weekend"] = (
+-    df["jour_semaine"] >= 5
+-).astype(int)
+-
+-# 5. Calculer l'amplitude horaire par utilisateur et par jour
+-amplitude = df.groupby(["user_id", "date"])["heure"].agg(
+-    heure_min="min",
+-    heure_max="max"
+-).reset_index()
++df["date"] = df["timestamp"].dt.date.astype(str)
+ 
+-amplitude["amplitude_horaire"] = (
+-    amplitude["heure_max"] - amplitude["heure_min"]
+-)
++# 4. Indicateurs par log
++df["est_nuit"] = ((df["heure"] >= 22) | (df["heure"] <= 5)).astype(int)
++df["weekend"] = (df["jour_semaine"] >= 5).astype(int)
++df["echec"] = (df["statut"] == "FAILURE").astype(int)
++df["ip_externe"] = (~df["ip_source"].astype(str).str.startswith(PREFIXE_INTERNE)).astype(int)
+ 
+-# 6. Créer les features finales
+-features = df.groupby(["user_id", "date"]).agg(
++# 5. Agrégation par utilisateur et par jour
++features = df.groupby(CLES).agg(
+     nb_actions=("action", "count"),
+-    nb_echecs=("statut", lambda x: (x == "FAILURE").sum()),
++    nb_echecs=("echec", "sum"),
+     volume_total=("volume", "sum"),
++    volume_max=("volume", "max"),
+     nb_acces_nuit=("est_nuit", "sum"),
+-    nb_weekend=("weekend", "sum")
++    nb_weekend=("weekend", "sum"),
++    heure_min=("heure", "min"),
++    heure_max=("heure", "max"),
++    nb_ip_externes=("ip_externe", "sum"),
++    nb_ip_distinctes=("ip_source", "nunique"),
++    role=("role", "first"),
+ ).reset_index()
+ 
+-# 7. Ajouter amplitude_horaire
+-features = features.merge(
+-    amplitude[["user_id", "date", "amplitude_horaire"]],
+-    on=["user_id", "date"],
+-    how="left"
+-)
++features["amplitude_horaire"] = features["heure_max"] - features["heure_min"]
++features["ratio_echecs"] = (features["nb_echecs"] / features["nb_actions"]).round(4)
++features = features.drop(columns=["heure_min", "heure_max"])
++
++# 6. Contexte pour les alertes : IP suspecte (externe si présente, sinon la plus fréquente)
++ip_ext = df[df["ip_externe"] == 1].groupby(CLES)["ip_source"].first().rename("ip_suspecte")
++ip_main = df.groupby(CLES)["ip_source"].agg(lambda x: x.mode().iat[0]).rename("ip_principale")
++ctx = pd.concat([ip_main, ip_ext], axis=1)
++ctx["ip_suspecte"] = ctx["ip_suspecte"].fillna(ctx["ip_principale"])
++ctx = ctx[["ip_suspecte"]].reset_index()
++
++# Heure du log au plus gros volume de la journée
++pic = df.loc[df.groupby(CLES)["volume"].idxmax(), CLES + ["heure"]].rename(columns={"heure": "heure_pic"})
+ 
+-# 8. Sauvegarder le fichier final
+-features.to_csv("data/logs_features.csv", index=False)
++features = features.merge(ctx, on=CLES, how="left").merge(pic, on=CLES, how="left")
+ 
+-print("✅ Features exportées → data/logs_features.csv")
+-print(features.head())
+\ No newline at end of file
++# 7. Sauvegarde
++features.to_csv(config["paths"]["features"], index=False)
++print(f"✅ Features exportées → {config['paths']['features']}  ({len(features)} lignes user-jour)")
++print(features.head())
+diff --git a/signalisations.py b/signalisations.py
+index 96f0a87..969dab0 100644
+--- a/signalisations.py
++++ b/signalisations.py
+@@ -1,70 +1,80 @@
+-import pandas as pd
+ import json
+ import os
++
++import pandas as pd
+ import yaml
++
+ from llm_analyst import generer_explication_llm
+ 
+ # Chargement de la configuration
+-with open("config.yaml", "r") as f:
++with open("config.yaml", "r", encoding="utf-8") as f:
+     config = yaml.safe_load(f)
+ 
++
++def motifs_techniques(row):
++    """Règles d'explicabilité : traduit les features qui s'écartent du normal en faits lisibles."""
++    motifs = []
++    if row.get("nb_echecs", 0) >= 3 or row.get("ratio_echecs", 0) >= 0.5:
++        motifs.append(f"{int(row['nb_echecs'])} échec(s) d'authentification ou d'accès")
++    if row.get("volume_max", 0) >= 100:
++        motifs.append(f"Extraction massive (jusqu'à {int(row['volume_max'])} dossiers en un accès)")
++    elif row.get("volume_max", 0) >= 10:
++        motifs.append(f"Volume inhabituel sur un accès ({int(row['volume_max'])})")
++    if row.get("nb_acces_nuit", 0) > 0:
++        motifs.append(f"Activité hors horaires ({int(row['nb_acces_nuit'])} accès nocturne(s))")
++    if row.get("nb_ip_externes", 0) > 0:
++        motifs.append(f"Connexion depuis une IP hors réseau hôpital ({row.get('ip_suspecte')})")
++    if row.get("amplitude_horaire", 0) > 14:
++        motifs.append("Amplitude horaire anormale")
++    return ", ".join(motifs) if motifs else "Déviation statistique comportementale globale."
++
++
+ def processing_moteur_alertes():
+     input_csv = config["paths"]["scores"]
+     output_json = config["paths"]["alerts"]
+-    
++    top_n_llm = config.get("alerts", {}).get("top_n_llm", 30)
++
+     if not os.path.exists(input_csv):
+         print(f"❌ Erreur : Le fichier {input_csv} est introuvable. Lancez d'abord detection.py")
+         return
+ 
+-    # Lecture des données réelles issues de l'Isolation Forest
+     df = pd.read_csv(input_csv)
++    anomalies = df[df["est_detecte"] == 1].sort_values(by="score_anomalie", ascending=False)
++
++    print(f"➔ ANALYTIC : {len(anomalies)} alertes à qualifier "
++          f"(enrichissement LLM sur les {top_n_llm} plus graves)...")
++
+     liste_alertes = []
+-    compteur_id = 1
+-    
+-    print("➔ ANALYTIC : Qualification des incidents et enrichissement par l'Agent LLM...")
+-    
+-    # Filtrage et tri des anomalies pour traiter le Top 10 des pires menaces de manière fluide
+-    anomalies = df[df['est_detecte'] == 1].sort_values(by="score_anomalie", ascending=False).head(10)
+-    
+-    for index, row in anomalies.iterrows():
+-        score = float(row['score_anomalie'])
+-        severite = row['severite']
+-        user_id = row['user_id']
+-            
+-        # Règles d'explicabilité contextuelle basées sur les indicateurs d'Aminata
+-        motifs = []
+-        if row.get('nb_echecs', 0) > 3:
+-            motifs.append(f"{int(row['nb_echecs'])} échecs d'authentification")
+-        if row.get('volume_total', 0) > 100:
+-            motifs.append(f"Extraction massive ({int(row['volume_total'])} fichiers patients)")
+-        if row.get('nb_acces_nuit', 0) > 0:
+-            motifs.append(f"Activité hors horaires ({int(row['nb_acces_nuit'])} accès nocturnes)")
+-        if row.get('amplitude_horaire', 0) > 14:
+-            motifs.append("Amplitude horaire anormale")
+-            
+-        explication_tech = ", ".join(motifs) if motifs else "Déviation statistique comportementale globale."
+-        
+-        # Enrichissement via l'Agent LLM
+-        explication_naturelle = generer_explication_llm(user_id, severite, explication_tech, round(score, 4))
+-
+-        structure_alerte = {
+-            "id_alerte": f"ALT-{compteur_id:04d}",
+-            "user_id": user_id,
+-            "date_activite": str(row['date']),
+-            "severite": severite,
++    for rang, (_, row) in enumerate(anomalies.iterrows(), start=1):
++        score = float(row["score_anomalie"])
++        explication_tech = motifs_techniques(row)
++
++        # L'agent LLM n'enrichit que les alertes les plus graves
++        explication_llm = ""
++        if rang <= top_n_llm:
++            explication_llm = generer_explication_llm(row["user_id"], row["severite"],
++                                                      explication_tech, round(score, 4))
++
++        liste_alertes.append({
++            "id_alerte": f"ALT-{rang:04d}",
++            "user_id": row["user_id"],
++            "role": row["role"],
++            "date_activite": str(row["date"]),
++            "heure_pic": int(row["heure_pic"]),
++            "ip_source": row["ip_suspecte"],
++            "severite": row["severite"],
+             "score_anomalie": round(score, 4),
+             "explication_technique": explication_tech,
+-            "explication_llm": explication_naturelle,
+-            "statut": "OUVERTE"
+-        }
+-        liste_alertes.append(structure_alerte)
+-        compteur_id += 1
++            "explication_llm": explication_llm,
++            "statut": "OUVERTE",
++        })
+ 
+     os.makedirs(os.path.dirname(output_json), exist_ok=True)
+-    with open(output_json, 'w', encoding='utf-8') as f:
++    with open(output_json, "w", encoding="utf-8") as f:
+         json.dump(liste_alertes, f, indent=4, ensure_ascii=False)
+-        
+-    print(f"☑ Succès : {len(liste_alertes)} incidents enrichis exportés dans {output_json}")
++
++    print(f"☑ Succès : {len(liste_alertes)} alertes exportées dans {output_json}")
++
+ 
+ if __name__ == "__main__":
+-    processing_moteur_alertes()
+\ No newline at end of file
++    processing_moteur_alertes()

@@ -51,32 +51,34 @@ else:
         data = json.load(f)
     df = pd.DataFrame(data)
 
-    # Enrichissement réseau virtuel
-    if 'ip_source' not in df.columns:
-        import random
-        random.seed(42)
-        df['ip_source'] = [f"10.140.23.{random.randint(10, 254)}" for _ in range(len(df))]
-        df['heure'] = [random.randint(0, 23) for _ in range(len(df))]
-        df['service_cible'] = [random.choice(["Urgences", "Radiologie", "Cardiologie", "Ressources Humaines", "DPI_Admin"]) for _ in range(len(df))]
+    # Les colonnes role / ip_source / heure_pic viennent désormais du pipeline réel
+    # (preprocessing.py -> signalisations.py), plus aucune donnée simulée ici.
+    colonnes_requises = {"role", "ip_source", "heure_pic"}
+    if df.empty:
+        st.info("Aucune alerte dans le fichier JSON.")
+        st.stop()
+    if not colonnes_requises.issubset(df.columns):
+        st.error("❌ Fichier d'alertes ancien format. Relancez : preprocessing.py → detection.py → signalisations.py")
+        st.stop()
 
     # --- BARRE LATÉRALE DE CONTRÔLE INTERACTIVE ---
     st.sidebar.markdown("### 🎛️ Paramètres d'Audit")
-    
+
     severites_dispos = ["CRITIQUE", "ÉLEVÉ", "MOYEN", "FAIBLE"]
     severites_choisies = st.sidebar.multiselect("Filtrer par Sévérité Algorithmique", severites_dispos, default=severites_dispos)
-    
-    services_dispos = ["Tous"] + sorted(df['service_cible'].unique().tolist())
-    service_choisi = st.sidebar.selectbox("Filtrer par Service Hospitalier", services_dispos)
+
+    roles_dispos = ["Tous"] + sorted(df['role'].unique().tolist())
+    role_choisi = st.sidebar.selectbox("Filtrer par Rôle de l'utilisateur", roles_dispos)
 
     # Filtrage du DataFrame
     df_filtre = df[df['severite'].isin(severites_choisies)]
-    if service_choisi != "Tous":
-        df_filtre = df_filtre[df_filtre['service_cible'] == service_choisi]
+    if role_choisi != "Tous":
+        df_filtre = df_filtre[df_filtre['role'] == role_choisi]
 
     # --- BANDEAU DÉTECTION ---
     contient_critique = "CRITIQUE" in df_filtre['severite'].values if not df_filtre.empty else False
     if contient_critique:
-        st.markdown('<div class="crisis-active">⚠️ ALERTE NIVEAU ROUGE : COMPROMISSION ET EXFILTRATION DETECTEES EN ZONE CRITIQUE</div>', unsafe_allow_html=True)
+        st.markdown('<div class="crisis-active">⚠️ ALERTE NIVEAU ROUGE : ANOMALIES DE SÉVÉRITÉ CRITIQUE DÉTECTÉES</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="crisis-active" style="background: linear-gradient(90deg, #4ea8de 0%, #48cae4 100%);">✓ FLUX COMPORTEMENTAL STABLE : SURVEILLANCE COMPORTEMENTALE STANDARDISEE</div>', unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
@@ -88,7 +90,7 @@ else:
     
     m1.metric("Incidents Identifiés", total_alertes, delta=f"+{critiques_count} Critiques" if critiques_count > 0 else None, delta_color="inverse")
     m2.metric("Indice de Menace Max", f"{df_filtre['score_anomalie'].max():.4f}" if total_alertes > 0 else "0.0000")
-    m3.metric("Service le Plus Ciblé", df_filtre['service_cible'].mode()[0] if total_alertes > 0 else "Aucun")
+    m3.metric("Rôle le Plus Concerné", df_filtre['role'].mode()[0] if total_alertes > 0 else "Aucun")
     m4.metric("Niveau d'Ingénierie", "TRL 5 (Plein Écran)")
 
     st.markdown("---")
@@ -100,7 +102,7 @@ else:
         st.markdown("#### 📈 Chronologie d'Attaque & Éléments Temporels")
         if total_alertes > 0:
             df_timeline = df_filtre.sort_values(by="date_activite")
-            st.area_chart(df_timeline, x="date_activite", y="score_anomalie", color="#e63946", use_container_width=True)
+            st.area_chart(df_timeline, x="date_activite", y="score_anomalie", color="#e63946", width="stretch")
         else:
             st.info("Aucun incident à afficher.")
 
@@ -108,12 +110,12 @@ else:
         st.markdown("#### 🌡️ Heatmap Horaire des Activités Suspectes")
         if total_alertes > 0:
             chart = alt.Chart(df_filtre).mark_rect().encode(
-                x=alt.X('heure:O', title='Heure de Connexion (24h)'),
-                y=alt.Y('service_cible:N', title='Service Hospitalier'),
+                x=alt.X('heure_pic:O', title='Heure du pic d\'activité (24h)'),
+                y=alt.Y('role:N', title='Rôle de l\'utilisateur'),
                 color=alt.Color('count():Q', title='Intensité', scale=alt.Scale(scheme='reds')),
-                tooltip=['heure', 'service_cible', 'count()']
+                tooltip=['heure_pic', 'role', 'count()']
             ).properties(height=280)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
         else:
             st.info("Aucune donnée disponible.")
 
@@ -129,7 +131,7 @@ else:
         with col_liste:
             # CORRECTION DU PARAMÈTRE ICI : width='stretch'
             st.dataframe(
-                df_visuel[["id_alerte", "user_id", "service_cible", "ip_source", "score_anomalie", "severite"]],
+                df_visuel[["id_alerte", "user_id", "role", "ip_source", "score_anomalie", "severite"]],
                 width="stretch",
                 hide_index=True
             )
@@ -141,9 +143,11 @@ else:
             incident_cible = st.selectbox("Cibler un Incident pour Confinement :", alertes_ids)
             ligne_cible = df_visuel[df_visuel['id_alerte'] == incident_cible].iloc[0]
             
-            if st.button(f"🔴 ISOLER L'UTILISATEUR {ligne_cible['user_id']}", use_container_width=True):
-                st.toast("Ordre de remédiation transmis !", icon="🛡️")
-                st.success(f"**Action Réussie :** Le compte `{ligne_cible['user_id']}` a été désactivé. L'IP `{ligne_cible['ip_source']}` est bloquée.")
+            if st.button(f"🔴 ISOLER L'UTILISATEUR {ligne_cible['user_id']}", width="stretch"):
+                st.toast("Ordre de confinement enregistré (simulation)", icon="🛡️")
+                st.warning(f"**Simulation SOAR :** ordre de désactivation du compte `{ligne_cible['user_id']}` "
+                           f"et de blocage de l'IP `{ligne_cible['ip_source']}` enregistré. "
+                           f"Aucune action réelle n'est exécutée : le prototype n'est pas connecté à un annuaire ni à un pare-feu.")
     else:
         st.info("Aucune anomalie à traiter.")
 
@@ -160,14 +164,19 @@ else:
             
         with sec2:
             st.markdown(f"🔬 **Métriques SIEM brutes :** `{ligne_audit['explication_technique']}`")
-            st.info(f"**💬 Rapport Vulgarisé de l'Agent LLM :**\n\n{ligne_audit['explication_llm']}")
-            
+            if ligne_audit['explication_llm']:
+                st.info(f"**💬 Rapport Vulgarisé de l'Agent LLM :**\n\n{ligne_audit['explication_llm']}")
+            else:
+                st.caption("Cette alerte n'est pas dans les plus graves enrichies par l'agent LLM "
+                           "(voir `alerts.top_n_llm` dans config.yaml).")
+
         st.markdown("💬 **Discuter avec l'Agent LLM à propos de cette menace**")
         user_msg = st.text_input("Saisir votre requête d'investigation :")
         if user_msg:
             with st.spinner("Génération de l'analyse cyber..."):
-                st.chat_message("assistant").write(
-                    f"Concernant l'alerte `{ligne_audit['id_alerte']}` de `{ligne_audit['user_id']}` dans le service `{ligne_audit['service_cible']}` : "
-                    f"les indicateurs de type '{ligne_audit['explication_technique']}' confirment une déviation comportementale notable. "
-                    f"En réponse à votre question : '{user_msg}', l'étape recommandée est l'audit forensic des terminaux liés à l'IP `{ligne_audit['ip_source']}`."
-                )
+                from llm_analyst import repondre_question
+                reponse, source = repondre_question(ligne_audit.to_dict(), user_msg)
+            if source == "llm":
+                st.chat_message("assistant").write(reponse)
+            else:
+                st.warning(reponse)
