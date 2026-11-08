@@ -4,12 +4,31 @@ paths:
   features: "data/logs_features.csv"
   scores: "data/logs_scores.csv"
   alerts: "data/alertes.json"
+  evaluation: "data/evaluation.json"
+
+network:
+  internal_prefix: "192.168."   # tout ce qui ne commence pas par ce préfixe = IP externe
 
 model:
-  contamination: 0.10
+  contamination: 0.10           # part de journées signalées (seuil d'alerte, à régler avec l'équipe SOC)
   n_estimators: 200
   random_state: 42
+  features:
+    - nb_actions
+    - nb_echecs
+    - ratio_echecs
+    - volume_total
+    - volume_max
+    - nb_acces_nuit
+    - nb_weekend
+    - amplitude_horaire
+    - nb_ip_externes
+    - nb_ip_distinctes
+
+alerts:
+  top_n_llm: 30                 # nombre d'alertes enrichies par l'agent LLM (les plus graves)
 
 llm:
   api_url: "http://localhost:11434/api/generate"  # API Ollama locale par défaut
   model_name: "llama3"                             # Modèle léger
+  timeout: 4
